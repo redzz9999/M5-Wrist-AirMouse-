@@ -1,0 +1,150 @@
+#include <M5StickCPlus2.h>
+#include <BleMouse.h>
+
+// --- Configuration Constants (ปรับค่าตรงนี้เพื่อเปลี่ยนความรู้สึกในการใช้งาน) ---
+
+// ความไวของเมาส์ (ค่ามาก = ขยับเร็วขึ้น)
+const float SENSITIVITY = 10; 
+
+// ค่าต่ำสุดที่การเอียงจะเริ่มทำงาน (ป้องกันเมาส์สั่น/ขยับเอง)
+// ถ้าเมาส์ขยับเองตอนอยู่นิ่งๆ ให้เพิ่มค่านี้ขึ้นเล็กน้อย
+const float DEAD_ZONE_THRESHOLD = 0.15; 
+
+// ชื่อที่จะแสดงตอนเชื่อมต่อ Bluetooth
+BleMouse bleMouse("M5StickC-WristMouse", "M5Stack", 100);
+
+void setup() {
+    // เริ่มการทำงานของ M5StickC Plus 2
+    M5.begin();
+
+    // เริ่มการทำงานของ IMU (เซ็นเซอร์การเคลื่อนไหว)
+    M5.Imu.begin();
+
+    // ตั้งค่าหน้าจอให้เป็นแนวตั้ง
+    M5.Display.setRotation(1);
+    M5.Display.fillScreen(BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(10, 10);
+    M5.Display.println("BLE Mouse");
+    M5.Display.println("Starting...");
+
+    // เริ่มการทำงานของ BLE Mouse
+    bleMouse.begin();
+
+    delay(2000);
+}
+
+// --- Global variables for button logic ---
+unsigned long btnB_press_time = 0;
+const int CLICK_THRESHOLD = 200; // ms threshold to detect a click vs a hold
+
+void loop() {
+    // อัปเดตสถานะของปุ่มและเซ็นเซอร์
+    M5.update();
+
+    // ตรวจสอบว่าเชื่อมต่อ Bluetooth แล้วหรือยัง
+    if (bleMouse.isConnected()) {
+        // --- อ่านค่าจาก Accelerometer ---
+        float ax, ay, az;
+        M5.Imu.getAccel(&ax, &ay, &az);
+
+        // --- การคำนวณการเคลื่อนที่ (Movement Logic with Scroll Mode) ---
+        int dx = 0;
+        int dy = 0;
+        int scroll_y = 0;
+
+        // แกน X (ซ้าย/ขวา) สำหรับการขยับเคอร์เซอร์
+        // dx = ax * SENSITIVITY; // Original
+        dx = -ax * SENSITIVITY; // Inverted, as requested
+
+        // ตรวจสอบว่าปุ่มข้าง (BtnB) ถูกกดค้างอยู่หรือไม่เพื่อเข้า "โหมด Scroll"
+        if (M5.BtnB.isPressed()) {
+            // SCROLL MODE: ถ้ากด BtnB ค้างไว้, การเอียงหน้า-หลังจะควบคุมการ Scroll
+            if (abs(ay) > DEAD_ZONE_THRESHOLD) {
+                scroll_y = ay * SENSITIVITY; // ay: tilting forward (ay+) scrolls up
+            }
+        } else {
+            // MOUSE MOVEMENT MODE: ถ้าไม่ได้กด BtnB, การเอียงหน้า-หลังจะควบคุมเคอร์เซอร์
+            if (abs(ay) > DEAD_ZONE_THRESHOLD) {
+                dy = -ay * SENSITIVITY; // -ay: tilting forward (ay+) moves cursor up (dy-)
+            }
+        }
+
+        // --- ส่งข้อมูลการเคลื่อนที่ถ้ามีการเปลี่ยนแปลง ---
+        if (dx != 0 || dy != 0 || scroll_y != 0) {
+            bleMouse.move(dx, dy, scroll_y, 0);
+        }
+
+        // --- การจัดการปุ่มกด (รองรับการกดค้าง และแยกแยะการคลิก) ---
+
+        // ปุ่ม M5 (BtnA) สำหรับคลิกซ้าย (กดค้างได้)
+        if (M5.BtnA.wasPressed()) {
+            bleMouse.press(MOUSE_LEFT);
+        }
+        if (M5.BtnA.wasReleased()) {
+            bleMouse.release(MOUSE_LEFT);
+        }
+
+        // ปุ่มข้าง (BtnB) สำหรับคลิกขวา (คลิกสั้นๆ) หรือใช้เป็นโหมด Scroll (กดค้าง)
+        if (M5.BtnB.wasPressed()) {
+            btnB_press_time = millis(); // เริ่มจับเวลาเมื่อกด
+        }
+        if (M5.BtnB.wasReleased()) {
+            // ตรวจสอบว่าระยะเวลาที่กดน้อยกว่าเกณฑ์หรือไม่
+            if (millis() - btnB_press_time < CLICK_THRESHOLD) {
+                bleMouse.click(MOUSE_RIGHT); // ถ้าน้อยกว่า = คลิกขวา
+            }
+            // ถ้ามากกว่า, ถือว่าเป็นการกดค้างเพื่อ Scroll ซึ่งไม่ต้องทำอะไรตอนปล่อย
+        }
+
+        // ปุ่ม Power (BtnPWR) สำหรับคลิกกลาง (Middle Click) - **ใช้งานด้วยความระมัดระวัง**
+        if (M5.BtnPWR.wasClicked()) {
+            bleMouse.click(MOUSE_MIDDLE);
+        }
+
+
+        // --- แสดงผลบนหน้าจอ (สำหรับ Debug) ---
+        M5.Display.fillScreen(BLACK);
+        M5.Display.setCursor(0, 10);
+        M5.Display.setTextColor(GREEN);
+        M5.Display.println("Status: Connected");
+
+        // แสดงโหมดปัจจุบันบนหน้าจอ
+        if(M5.BtnB.isPressed()){
+            M5.Display.setTextColor(CYAN);
+            M5.Display.setCursor(5, 30);
+            M5.Display.print("SCROLL MODE");
+        }
+
+        M5.Display.setTextColor(WHITE);
+        M5.Display.setCursor(0, 50);
+        M5.Display.printf("AX: %+.2f  DX: %d\n", ax, dx);
+        M5.Display.printf("AY: %+.2f  DY: %d\n", ay, dy);
+        M5.Display.printf("            SC: %d\n", scroll_y);
+
+        M5.Display.setCursor(10, 180);
+        M5.Display.setTextSize(1);
+        M5.Display.println("BtnA: Left Click/Drag");
+        M5.Display.println("BtnB: Right Click");
+        M5.Display.println("Hold BtnB + Tilt: Scroll");
+        M5.Display.setTextSize(2);
+
+
+    } else {
+        // --- แสดงผลเมื่อยังไม่ได้เชื่อมต่อ ---
+        M5.Display.fillScreen(BLACK);
+        M5.Display.setCursor(0, 10);
+        M5.Display.setTextColor(YELLOW);
+        M5.Display.println("Status: Waiting...");
+        M5.Display.setTextColor(WHITE);
+        M5.Display.setTextSize(1);
+        M5.Display.setCursor(10, 50);
+        M5.Display.println("Open Bluetooth settings on");
+        M5.Display.println("your computer and connect");
+        M5.Display.println("to 'M5StickC-WristMouse'");
+        M5.Display.setTextSize(2);
+    }
+
+    // หน่วงเวลาเล็กน้อยเพื่อความเสถียร
+    delay(10);
+}
